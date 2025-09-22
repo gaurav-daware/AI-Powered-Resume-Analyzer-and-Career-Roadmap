@@ -5,9 +5,9 @@ import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 'AI-Powered Resume Analyzer & Career Roadmap',
+  description: 'A modern web application that combines AI-powered resume analysis with personalized career guidance. Upload your resume to get compatibility scores with job requirements and receive tailored career advice from an AI advisor',
+  generator: 'Gaurav D.',
 }
 
 export default function RootLayout({
