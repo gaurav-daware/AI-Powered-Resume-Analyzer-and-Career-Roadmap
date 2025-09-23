@@ -58,6 +58,16 @@ export function CareerRoadmap({ uploadedFile }: CareerRoadmapProps) {
     }
   }, [messages])
 
+  // utility to clean unwanted markdown symbols
+const cleanMessage = (text: string) => {
+  return text
+    .replace(/^##\s?/gm, "")      // remove headings ##
+    .replace(/\*\*/g, "")         // remove bold markers
+    .replace(/\*/g, "")           // remove bullet markers *
+    .trim();
+};
+
+
   const handleSendMessage = async () => {
     if (!uploadedFile) {
       toast({
@@ -213,7 +223,7 @@ export function CareerRoadmap({ uploadedFile }: CareerRoadmapProps) {
                           : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
                       }`}
                     >
-                      <div className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</div>
+                      <div className="whitespace-pre-wrap text-sm leading-relaxed">{cleanMessage(message.content)}</div>
                       <div className="text-xs opacity-70 mt-1">{message.timestamp.toLocaleTimeString()}</div>
                     </div>
 

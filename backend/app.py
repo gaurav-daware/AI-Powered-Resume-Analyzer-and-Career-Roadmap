@@ -222,7 +222,7 @@ def perform_detailed_analysis(resume_text, job_requirement):
     keyword_weight = 0.6
     tech_weight = 0.4
     
-    weighted_score = (base_score * keyword_weight)
+    weighted_score = (base_score * keyword_weight *10)
     if job_techs:
         tech_match_percentage = len(matching_techs) / len(job_techs)
         weighted_score += (tech_match_percentage * 100 * tech_weight)
