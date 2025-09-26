@@ -52,6 +52,14 @@ interface AnalysisResult {
 }
 
 export function ResumeAnalyzer({ onUploadSuccess }: ResumeAnalyzerProps) {
+
+  const cleanMessage = (text: string) => {
+  return text
+    .replace(/^##\s?/gm, "")      // remove headings ##
+    .replace(/\*\*/g, "")         // remove bold markers
+    .replace(/\*/g, "")           // remove bullet markers *
+    .trim();
+};
   const [uploadedFile, setUploadedFile] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [jobRequirement, setJobRequirement] = useState("")
@@ -474,7 +482,7 @@ export function ResumeAnalyzer({ onUploadSuccess }: ResumeAnalyzerProps) {
                     <div className="flex-shrink-0 w-6 h-6 bg-primary text-primary-foreground rounded-full flex items-center justify-center text-sm font-medium">
                       {index + 1}
                     </div>
-                    <p className="text-sm leading-relaxed">{recommendation}</p>
+                    <p className="text-sm leading-relaxed">{cleanMessage(recommendation)}</p>
                   </div>
                 ))}
               </div>

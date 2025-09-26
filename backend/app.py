@@ -21,7 +21,7 @@ CORS(app)
 
 # --- Initialize with Google's Gemini API ---
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini_model = genai.GenerativeModel('models/gemini-1.5-flash')
+gemini_model = genai.GenerativeModel('models/gemini-2.5-flash')
 
 nlp = spacy.load("en_core_web_sm")
 
