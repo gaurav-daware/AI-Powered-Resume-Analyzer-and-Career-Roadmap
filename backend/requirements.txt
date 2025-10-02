@@ -1,8 +1,14 @@
 Flask
-flask-cors
-spacy
-PyPDF2
+Flask-CORS
 python-dotenv
-google-generativeai
+PyPDF2
 scikit-learn
-Werkzeug
+spacy
+# Spacy model dependency
+en_core_web_sm
+# Google/LangChain Dependencies
+google-genai
+langchain
+langchain-google-genai
+# Utility
+werkzeug

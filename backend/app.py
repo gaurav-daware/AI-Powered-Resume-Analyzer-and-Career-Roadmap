@@ -4,35 +4,39 @@ import spacy
 import re
 from PyPDF2 import PdfReader
 import os
+import uuid # For unique filenames
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains import ConversationChain
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.prompts import PromptTemplate
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
-import uuid # For unique filenames
 
 # --- Load environment variables for API key ---
 load_dotenv()
 
 app = Flask(__name__)
-# Enable CORS for frontend communication
 CORS(app)
 
 # --- Initialize with Google's Gemini API ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not found. Please set it in your .env file.")
+    # Use an appropriate error handling for production
+    print("FATAL: GEMINI_API_KEY not found. Please set it in your .env file.")
+    # Fallback to a stub or raise an error
 genai.configure(api_key=GEMINI_API_KEY)
 # Using a slightly more capable model for complex analysis tasks
-gemini_model = genai.GenerativeModel('models/gemini-2.5-flash') 
+gemini_model = genai.GenerativeModel('models/gemini-2.5-flash')
 
-# Initialize spacy for simple text processing (we rely less on it now)
+# Initialize spacy for simple text processing
 try:
     nlp = spacy.load("en_core_web_sm")
 except OSError:
-    print("Downloading spaCy model 'en_core_web_sm'. Run 'python -m spacy download en_core_web_sm' to prevent this on startup.")
     spacy.cli.download("en_core_web_sm")
     nlp = spacy.load("en_core_web_sm")
 
@@ -47,13 +51,66 @@ if not os.path.exists(UPLOAD_FOLDER):
 if not os.path.exists(app.config['HIGHLIGHT_FOLDER']):
     os.makedirs(app.config['HIGHLIGHT_FOLDER'])
 
-# Global state for the single uploaded resume
-current_resume = None # (filename, raw_text)
-cleaned_resume_text = None
-detected_domain = None
+# --- Global State ---
+current_resume = None       # (unique_filename, raw_text)
+cleaned_resume_text = None  # Cleaned resume text for analysis
+detected_domain = "General Career Field" # Dynamic domain detection result
 
-# --- AI Helper Functions ---
+# --- LangChain Globals ---
+memory = ConversationBufferWindowMemory(k=5, memory_key="chat_history")
+conversation_chain = None 
 
+# --- NEW: LangChain Initialization ---
+def initialize_conversation_chain(resume_text, domain):
+    global conversation_chain, memory
+    
+    # Clear memory for the new resume
+    memory.clear()
+
+    # 1. Define the LLM (LangChain wrapper)
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash", 
+        google_api_key=GEMINI_API_KEY,
+        temperature=0.5
+    )
+    
+    # 2. Define the Prompt Template (Includes safety and context)
+    template = f"""
+    You are an expert, professional career advisor specializing in the **{{domain}}** field.
+    Your analysis and advice are strictly based on the following resume:
+    ---
+    RESUME CONTEXT:
+    {{resume_text}}
+    ---
+    
+    You must maintain a professional and objective tone.
+
+    RULES:
+    1. If the user's query is **inappropriate, offensive, or clearly non-professional and unrelated to job searching, career development, or skills**, respond ONLY with the standard, polite refusal: 'I am here to assist you with career and professional development questions only. Please submit a query related to your career goals or resume.'
+    2. Use the "chat_history" to remember context from the previous 5 turns.
+    3. When discussing salary, acknowledge that providing an exact figure is impossible, and focus on the **factors** that will influence their potential salary range in the detected career field.
+    4. Provide detailed, actionable advice relevant to the {{domain}} field.
+
+    {{chat_history}}
+    Human: {{input}}
+    AI:"""
+
+    PROMPT = PromptTemplate(
+        input_variables=["chat_history", "input"],
+        # Partial variables inject the static resume/domain context into every prompt
+        partial_variables={"resume_text": resume_text[:4000], "domain": domain}, 
+        template=template,
+    )
+
+    # 3. Create the Conversation Chain
+    conversation_chain = ConversationChain(
+        llm=llm,
+        prompt=PROMPT,
+        verbose=False, # Set to True for debugging the prompt structure
+        memory=memory,
+    )
+
+# --- NEW: Dynamic Domain Detection (Replacing static list) ---
 def detect_resume_domain(text):
     """Dynamically detect the specific career field of the resume using AI."""
     try:
@@ -61,15 +118,15 @@ def detect_resume_domain(text):
         Analyze the following resume text and identify the most specific and relevant career domain, industry, or job function. 
         Examples of possible responses are: 'Quantitative Finance', 'Biomedical Research', 'Civil Engineering', 'UX/UI Design', 'Primary School Education'.
         
-        Resume Text: {text[:2000]}...
+        Resume Text: {text[:1500]}...
         
-        Respond with **ONLY** the domain name. Do not add any explanation, quotation marks, or surrounding text.
+        Respond with **ONLY** the domain name. Do not add any explanation or quotation marks.
         """
         
         response = gemini_model.generate_content(prompt)
         domain = response.text.strip()
         
-        # Simple cleanup to handle stray characters
+        # Simple cleanup to handle stray characters and normalize
         domain = re.sub(r'[^a-zA-Z0-9\s/&-]', '', domain) 
         if not domain:
             return "General Career Field"
@@ -80,6 +137,7 @@ def detect_resume_domain(text):
         print(f"Error detecting domain: {e}")
         return "General Career Field"
 
+# --- NEW: Dynamic Skill Extraction for Analysis ---
 def extract_required_skills(job_requirement):
     """Use AI to extract a structured list of hard and soft skills from job requirements."""
     try:
@@ -96,8 +154,6 @@ def extract_required_skills(job_requirement):
         }}
         """
         response = gemini_model.generate_content(prompt)
-        
-        # Clean up and parse the JSON
         response_text = response.text.strip().replace('```json', '').replace('```', '').strip()
         return json.loads(response_text)
         
@@ -124,7 +180,7 @@ def extract_resume_skills(resume_text, domain):
         print(f"Error extracting resume skills: {e}")
         return []
 
-# --- Utility Functions ---
+# --- Utility Functions (Modified) ---
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -132,13 +188,13 @@ def allowed_file(filename):
 def process_single_resume(text):
     if not text.strip():
         return None
-    # Remove unicode artifacts and excessive whitespace
     cleaned_text = re.sub(r'[\uf000-\uf8ff]', '', text)
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
     return cleaned_text
 
 def delete_all_files():
     """Deletes all files in the upload and highlighted folders."""
+    # ... (existing file deletion logic)
     for folder in [UPLOAD_FOLDER, app.config['HIGHLIGHT_FOLDER']]:
         if os.path.exists(folder):
             for filename in os.listdir(folder):
@@ -166,8 +222,9 @@ def summarize_text(text, num_sentences=3):
     sentences = [sent.text for sent in doc.sents]
     return " ".join(sentences[:num_sentences])
 
-# --- Core Dynamic Analysis Functions ---
+# --- Core Dynamic Analysis Functions (Major Overhaul) ---
 
+# Replaced the original perform_detailed_analysis to use dynamic skill extraction
 def perform_detailed_analysis(resume_text, job_requirement, domain):
     """Perform comprehensive resume analysis with dynamic skill scoring."""
     
@@ -186,36 +243,33 @@ def perform_detailed_analysis(resume_text, job_requirement, domain):
     matching_keywords = list(job_keywords_set.intersection(resume_skills_set))
     missing_keywords = list(job_keywords_set - resume_skills_set)
 
-    # 4. TF-IDF for Conceptual Similarity (Keyword independent)
+    # 4. TF-IDF for Conceptual Similarity
     documents = [resume_text, job_requirement]
-    # Use a limited set of job keywords to focus TF-IDF on core concepts
-    tfidf_documents = [" ".join(resume_skills_set), job_requirement]
     
+    # Use the full text for conceptual TF-IDF (robust against varying skill names)
     vectorizer = TfidfVectorizer(stop_words='english', token_pattern=r'(?u)\b\w+\b')
-    tfidf_matrix = vectorizer.fit_transform(tfidf_documents)
+    tfidf_matrix = vectorizer.fit_transform(documents)
     
     if tfidf_matrix.shape[0] < 2:
-        # Fallback if TFIDF fails (e.g., empty text)
         base_score = 0
     else:
         cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])
         base_score = cosine_sim[0][0] * 100
     
-    # 5. Adjust score based on skill match ratio (The primary weight)
+    # 5. Calculate Score based on Skill Match and Conceptual Match
     skill_match_ratio = len(matching_keywords) / max(1, len(job_keywords_set))
     
-    # Simple weighted score: 70% skill match, 30% conceptual match
+    # Weighted score: 70% skill match (direct alignment), 30% conceptual match (overall fit)
     final_score = (base_score * 0.30) + (skill_match_ratio * 70)
-    final_score = min(100, final_score) # Cap at 100
+    final_score = min(100, final_score) 
     
     # 6. Calculate Keyword Density
     keyword_density = {}
     for keyword in matching_keywords:
-        # Use simple count for density
         count = resume_text.lower().count(keyword)
         keyword_density[keyword] = count
     
-    # 7. Generate AI-powered insights
+    # 7. Generate AI-powered insights (Now fully dynamic, removing old domain-specific helpers)
     recommendations = generate_recommendations(resume_text, job_requirement, final_score, missing_keywords, domain)
     skill_gaps = generate_skill_gap_analysis(resume_text, job_requirement, domain)
     
@@ -233,11 +287,10 @@ def perform_detailed_analysis(resume_text, job_requirement, domain):
     }
 
 def generate_recommendations(resume_text, job_requirement, score, missing_keywords, domain):
-    """Generate AI-powered domain-specific recommendations (AI Call 3)."""
+    """Generate AI-powered dynamic recommendations."""
     try:
-        
         prompt = f"""
-        As an expert resume consultant specializing in the **{domain}** career field, analyze this resume against the job requirements and provide specific, actionable recommendations to improve its ATS score and relevance.
+        As an expert resume consultant specializing in the **{domain}** field, analyze this resume against the job requirements and provide specific, actionable recommendations to improve its ATS score and relevance.
 
         First, provide a brief (one sentence) **Domain-Specific Guidance** for a resume in **{domain}**. 
         
@@ -272,7 +325,7 @@ def generate_recommendations(resume_text, job_requirement, score, missing_keywor
         ]
 
 def generate_skill_gap_analysis(resume_text, job_requirement, domain):
-    """Generate dynamic skill gap analysis with learning resources (AI Call 4)."""
+    """Generate dynamic skill gap analysis with learning resources."""
     try:
         
         prompt = f"""
@@ -305,7 +358,6 @@ def generate_skill_gap_analysis(resume_text, job_requirement, domain):
         response = gemini_model.generate_content(prompt)
         response_text = response.text.strip().replace('```json', '').replace('```', '').strip()
         
-        # Use simple loads, rely on the prompt to enforce JSON structure
         return json.loads(response_text)
         
     except Exception as e:
@@ -322,13 +374,12 @@ def generate_skill_gap_analysis(resume_text, job_requirement, domain):
         }
 
 
-# --- Flask Routes ---
+# --- Flask Routes (Updated) ---
 
 @app.route('/upload', methods=['POST'])
 def upload_resume():
     global current_resume, cleaned_resume_text, detected_domain
     
-    # Clean up old files before new upload
     delete_all_files()
 
     if 'file' not in request.files:
@@ -340,7 +391,7 @@ def upload_resume():
         return jsonify({"error": "No selected file"}), 400
 
     if file and allowed_file(file.filename):
-        # Secure filename and ensure uniqueness to prevent conflicts
+        # Use a unique filename to prevent conflicts
         original_filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4().hex}_{original_filename}"
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
@@ -358,8 +409,11 @@ def upload_resume():
             cleaned_resume_text = process_single_resume(text)
             current_resume = (unique_filename, text.strip())
             
-            # Detect domain automatically (AI Call 5)
+            # Detect domain automatically (Dynamic AI Call)
             detected_domain = detect_resume_domain(cleaned_resume_text)
+            
+            # --- NEW: Initialize LangChain Chain after successful upload/detection ---
+            initialize_conversation_chain(cleaned_resume_text, detected_domain)
 
             response = {
                 "message": "Resume uploaded and processed successfully",
@@ -370,7 +424,6 @@ def upload_resume():
             return jsonify(response), 201
             
         except Exception as e:
-            # Clean up the partially saved file if processing failed
             if os.path.exists(file_path):
                  os.remove(file_path)
             return jsonify({"error": f"Error processing file: {str(e)}"}), 500
@@ -379,7 +432,7 @@ def upload_resume():
 
 @app.route('/delete', methods=['POST'])
 def delete_resume():
-    global current_resume, cleaned_resume_text, detected_domain
+    global current_resume, cleaned_resume_text, detected_domain, conversation_chain
     
     if current_resume is None:
         return jsonify({"message": "No resume to delete"}), 404
@@ -390,16 +443,20 @@ def delete_resume():
     if os.path.exists(file_path):
         os.remove(file_path)
     
+    # --- NEW: Clear global state and LangChain artifacts ---
     current_resume = None
     cleaned_resume_text = None
-    detected_domain = None
+    detected_domain = "General Career Field"
+    conversation_chain = None
     
-    return jsonify({"message": f"File '{filename}' deleted successfully"}), 200
+    return jsonify({"message": f"File '{filename.split('_', 1)[-1]}' deleted successfully"}), 200
 
 @app.route('/career_roadmap', methods=['POST'])
 def career_roadmap():
-    if not cleaned_resume_text:
-        return jsonify({"error": "Please upload a resume first."}), 400
+    global conversation_chain
+
+    if not conversation_chain:
+        return jsonify({"error": "Chat not initialized. Please upload a resume first."}), 400
 
     data = request.get_json()
     user_query = data.get('query', '')
@@ -408,42 +465,30 @@ def career_roadmap():
         return jsonify({"error": "Query cannot be empty."}), 400
     
     try:
-        # --- ADJUSTED Safety and Instruction Layer ---
-        safety_prompt = """
-        IMPORTANT INSTRUCTIONS: 
-        1. You are a **professional, objective, AI Career Advisor**.
-        2. If the user's query is **inappropriate, offensive, or clearly non-professional and unrelated to job searching, career development, or skills**, you must respond with a **standard, polite refusal** such as: 'I am here to assist you with career and professional development questions only. Please submit a query related to your career goals or resume.'
-        3. For **valid, professional queries**, including questions about salary, roles, next steps, or skill gaps, you must answer them directly based on the resume context. Do NOT use the refusal phrase for valid questions.
-        4. When discussing salary, acknowledge that providing an exact figure is impossible, and focus on the **factors** that will influence their potential salary range in the detected career field.
-        """
-        # --- End ADJUSTED Safety Layer ---
+        # --- NEW: Invoke the LangChain conversation chain ---
+        response = conversation_chain.invoke(user_query)
+        
+        # LangChain's response object contains the text in the 'response' key
+        ai_response = response.get('response', "Sorry, I couldn't process that request.")
+        
+        # We can extract the domain from the prompt's partial variables for the frontend
+        current_domain = conversation_chain.prompt.partial_variables.get("domain", "General Career Field")
 
-        prompt = (
-            f"{safety_prompt}\n\n"
-            f"You are an expert career advisor specializing in **{detected_domain}**. "
-            f"Based on the following resume text, provide a comprehensive response. "
-            f"The user is asking: '{user_query}'\n\n"
-            f"Resume Text:\n{cleaned_resume_text}\n\n"
-            f"If the query is about career next steps, include skill gaps, recommended courses/certifications, and potential next career steps in this field. Format your response clearly in markdown."
-        )
-        
-        response = gemini_model.generate_content(prompt)
-        
         return jsonify({
-            "response": response.text,
-            "domain": detected_domain
+            "response": ai_response,
+            "domain": current_domain
         }), 200
 
     except Exception as e:
-        # ... (error handling remains the same)
+        print(f"Error invoking LangChain: {e}")
         return jsonify({"error": f"An error occurred with the AI model: {str(e)}"}), 500
 
 @app.route('/rate_resumes', methods=['POST'])
 def rate_resumes():
     global cleaned_resume_text
     
-    if not cleaned_resume_text or not detected_domain or not current_resume:
-        return jsonify({"error": "No resume available to rate. Please upload first."}), 400
+    if not cleaned_resume_text:
+        return jsonify({"error": "No resume available to rate"}), 400
 
     data = request.get_json()
     if not data or 'job_requirement' not in data:
@@ -453,28 +498,22 @@ def rate_resumes():
     if not job_requirement.strip():
         return jsonify({"error": "Job requirement cannot be empty"}), 400
 
-    try:
-        # The core analysis function now handles all the dynamic skill extraction
-        analysis_result = perform_detailed_analysis(cleaned_resume_text, job_requirement, detected_domain)
-        
-        response = {
-            "job_requirement": job_requirement,
-            "resume_count": 1,
-            "detected_domain": detected_domain,
-            "results": [{
-                "filename": current_resume[0].split('_', 1)[-1], # Display original name
-                **analysis_result
-            }]
-        }
-        return jsonify(response), 200
-    except Exception as e:
-        print(f"Error during resume rating: {e}")
-        return jsonify({"error": f"An unexpected error occurred during rating: {str(e)}"}), 500
+    # The analysis functions now use the dynamic logic
+    analysis_result = perform_detailed_analysis(cleaned_resume_text, job_requirement, detected_domain)
+    
+    response = {
+        "job_requirement": job_requirement,
+        "resume_count": 1,
+        "detected_domain": detected_domain,
+        "results": [{
+            "filename": current_resume[0].split('_', 1)[-1], # Display original name
+            **analysis_result
+        }]
+    }
+    return jsonify(response), 200
 
 if __name__ == '__main__':
-    # Ensure API key is set before running
     if not GEMINI_API_KEY:
-        print("FATAL: GEMINI_API_KEY environment variable is not set. Cannot run the application.")
+        print("Please set the GEMINI_API_KEY environment variable.")
     else:
-        # Use threaded=True for better handling of concurrent requests (dev only)
         app.run(debug=True, host='0.0.0.0', port=5000)
