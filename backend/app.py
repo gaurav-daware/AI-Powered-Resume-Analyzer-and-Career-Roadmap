@@ -264,13 +264,23 @@ def career_roadmap():
         return jsonify({"error": "Query cannot be empty."}), 400
     
     try:
+        # --- ADJUSTED Safety and Instruction Layer ---
+        safety_prompt = """
+        IMPORTANT INSTRUCTIONS: 
+        1. You are a **professional, objective, AI Career Advisor**.
+        2. If the user's query is **inappropriate, offensive, or clearly non-professional and unrelated to job searching, career development, or skills**, you must respond with a **standard, polite refusal** such as: 'I am here to assist you with career and professional development questions only. Please submit a query related to your career goals or resume.'
+        3. For **valid, professional queries**, including questions about salary, roles, next steps, or skill gaps, you must answer them directly based on the resume context. Do NOT use the refusal phrase for valid questions.
+        4. When discussing salary, acknowledge that providing an exact figure is impossible, and focus on the **factors** that will influence their potential salary range in the detected career field.
+        """
+        # --- End ADJUSTED Safety Layer ---
+
         prompt = (
-            f"You are an expert career advisor specializing in {detected_domain}. "
-            f"Based on the following resume text, provide a career roadmap and suggestions. "
+            f"{safety_prompt}\n\n"
+            f"You are an expert career advisor specializing in **{detected_domain}**. "
+            f"Based on the following resume text, provide a comprehensive response. "
             f"The user is asking: '{user_query}'\n\n"
             f"Resume Text:\n{cleaned_resume_text}\n\n"
-            f"Suggestions should include skill gaps, recommended courses/certifications specific to {detected_domain}, "
-            f"and potential next career steps in this field. Format your response clearly in markdown."
+            f"If the query is about career next steps, include skill gaps, recommended courses/certifications, and potential next career steps in this field. Format your response clearly in markdown."
         )
         
         response = gemini_model.generate_content(prompt)
@@ -281,6 +291,7 @@ def career_roadmap():
         }), 200
 
     except Exception as e:
+        # ... (error handling remains the same)
         return jsonify({"error": f"An error occurred with the AI model: {str(e)}"}), 500
 
 @app.route('/rate_resumes', methods=['POST'])
