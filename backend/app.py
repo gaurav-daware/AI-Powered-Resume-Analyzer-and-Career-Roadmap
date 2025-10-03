@@ -88,7 +88,7 @@ def initialize_conversation_chain(resume_text, domain):
     RULES:
     1. If the user's query is **inappropriate, offensive, or clearly non-professional and unrelated to job searching, career development, or skills**, respond ONLY with the standard, polite refusal: 'I am here to assist you with career and professional development questions only. Please submit a query related to your career goals or resume.'
     2. Use the "chat_history" to remember context from the previous 5 turns.
-    3. When discussing salary, acknowledge that providing an exact figure is impossible, and focus on the **factors** that will influence their potential salary range in the detected career field.
+    3. When discussing salary, acknowledge that providing an exact figure is impossible(try to provide salary range), and focus on the **factors** that will influence their potential salary range in the detected career field.
     4. Provide detailed, actionable advice relevant to the {{domain}} field.
 
     {{chat_history}}
